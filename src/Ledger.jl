@@ -1,7 +1,7 @@
 ##module Ledger
 
 ##using DataFrames, CategoricalArrays, CodecZlib, FileIO, TimeZones
-using Dates, DataFrames
+using Dates, DataFrames, StatsBase
 
 struct Security
 is_derivative::Bool
@@ -18,58 +18,63 @@ quantity::Float64
 price::Float64
 end
 
+struct Position
+units::Float64
+value::Float64
+derivatives_offset::Float64
+end
+
+struct PositionSE
+unrealized_pnl::Float64
+realized_pnl::Float64
+end
+
+
+
 mutable struct Ledger
-## assets
-holdings::Dict{String,Float64}
-
-## liabilities
-derivatives_settlement::Dict{String,Float64}
-
-## shareholder equity
-unrealized_pnl::Dict{String,Float64}
-realized_pnl::Dict{String,Float64}
-Ledger() = new(Dict{String,Float64}(), Dict{String,Float64}(), Dict{String,Float64}(), Dict{String,Float64}())
+positions::Dict{String,Position}
+shareholder_equity::Dict{String,PositionSE}
+Ledger() = new(Dict{String,Position}(),Dict{String,PositionSE}())
 end
 
+function initDerivative(positions::Dict{String,Position},ticker::String,quantity::Float64,value::Float64)
+    @assert !haskey(positions,ticker)
+    positions[ticker] = Position(quantity,value,-value)
+end
 
-function updatePosition(ticker::String,quantity::Float64,holdings::Dict{String,Float64})
-    ## needed b/c julia has no map += init
-    if haskey(holdings,ticker)
-        ## existing index, increment
-        pos = holdings[ticker] += quantity
+function initPosition(positions::Dict{String,Position},ticker::String,quantity::Float64,value::Float64)
+    @assert !haskey(positions,ticker)
+    positions[ticker] = Position(quantity,value,0)
+end
 
-        ## if position is completely closed out, remove the index
-        if pos == 0
-            delete!(holdings,ticker)
-        end
+function debitCash(positions::Dict{String,Position},ccy::String,quantity::Float64)
+    if !haskey(positions,ccy)
+        l.positions[ccy] = Position(-quantity,-quantity,0)
     else
-        ## new entry, init
-        l.holdings[ticker] = quantity
+        l.positions[ccy] += Position(-quantity,-quantity,0)
     end
 end
 
-## assets = liabilities + equity
 function updateLedger(l::Ledger,t::Transaction,secmaster::Dict{String,Security})
-
-    ## treatment of holding quantity is identical between cash and derivatives
-    updatePosition(t.ticker,t.quantity,l.holdings)
-
     s = secmaster[t.ticker]
-    settlement_cash = -t.quantity * s.valuation(t.price)
+    value = t.quantity * s.valuation(t.price)
 
-    if s.is_derivative
-        ## derivative contra is tracked by ticker
-        if haskey(l.derivatives_settlement,s.settle_ccy)
-            derivatives_settlement[s.ticker] -= settlement_cash
+    # init position has no SE impact
+    if !haskey(l.positions,t.ticker)
+        if s.is_derivative
+            initDerivative(l.positions,t.ticker,t.quantity,value)
         else
-            derivatives_settlement[s.ticker] = settlement_cash
+            ## init position / debit cash
+            initPosition(l.positions,t.ticker,t.quantity,value)
+            debitCash(l.positions,s.settle_ccy,value)
         end
-    else
-        ## if not a derivitive, debit cash
-        updatePosition(s.settle_ccy,settlement_cash,l.holdings)
     end
-end
 
+    ## just for now
+    @assert sum([x.value for x  in values(l.positions)])==0
+    ##@assert countmap(l.positions)
+    ##@assert values(l.positions)
+end
 # function run_pnl(transactions::Vector{Transaction},secmaster::Dict{String,Security},prices::NDSparse)
 
 #     ## add checks
