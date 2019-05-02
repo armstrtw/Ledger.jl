@@ -3,6 +3,26 @@
 ##using DataFrames, CategoricalArrays, CodecZlib, FileIO, TimeZones
 using Dates, DataFrames, StatsBase
 
+
+## convenience functions to simulate c++ map<k,v> += op
+function increment!(d::Dict{K,V},k::K,v::V) where V where K
+    if haskey(d,k)
+        d[k] += v
+    else
+        d[k] = v
+    end
+end
+
+## incrementdelete! removes the dangling 0 position key
+function incrementdelete!(d::Dict{K,V},k::K,v::V) where V where K
+    nv = increment!(d, k, v)
+    if nv==zero(V)
+        delete!(d, k)
+    end
+    nv
+end
+
+
 struct Security
 is_derivative::Bool
 trade_ccy::String
@@ -28,8 +48,6 @@ struct PositionSE
 unrealized_pnl::Float64
 realized_pnl::Float64
 end
-
-
 
 mutable struct Ledger
 positions::Dict{String,Position}
