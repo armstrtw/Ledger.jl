@@ -60,7 +60,8 @@ positions::Dict{String,Position}
 Ledger() = new(Dict{String,Float64}(),Dict{String,Position}())
 end
 
-function updateLedger(l::Ledger,t::Transaction,secmaster::Dict{String,Security})
+## returns a tuple of unrealized_pnl, realized_pnl
+function updateLedger!(l::Ledger,t::Transaction,secmaster::Dict{String,Security})
     s = secmaster[t.ticker]
     value = t.quantity * s.valuation(t.price)
 
@@ -82,6 +83,8 @@ function updateLedger(l::Ledger,t::Transaction,secmaster::Dict{String,Security})
             increment!(l.inventory,s.settle_ccy,-value)
             increment!(l.positions,s.settle_ccy,Position(-value,0,0,0))
         end
+        ## position init/add, no SE impact
+        return (0.,0.)
     end
 
     ## just for now
@@ -147,9 +150,9 @@ trades = [Transaction(Date(2019,1,2,),"AMZN",1000,200),
 
 l = Ledger()
 
-updateLedger(l,trades[1],secmaster)
-##updateLedger(l,trades[2],secmaster)
-##updateLedger(l,trades[3],secmaster)
+updateLedger!(l,trades[1],secmaster)
+##updateLedger!(l,trades[2],secmaster)
+##updateLedger!(l,trades[3],secmaster)
 print(l)
 
 
