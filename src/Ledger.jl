@@ -72,8 +72,8 @@ function updateLedger!(l::Ledger,t::Transaction,secmaster::Dict{String,Security}
     # 3) flip position
 
     # 1) new position / add to position has no SE impact
-    if !haskey(l.inventory,t.ticker)
-        l.inventory[t.ticker] = t.quantity
+    if !haskey(l.inventory,t.ticker) || sign(t.quantity) == sign(l.inventory[t.ticker])
+        increment!(l.inventory,t.ticker,t.quantity)
         if s.is_derivative
             ## for derivatives, decr derivatives_offset
             increment!(l.positions,t.ticker,Position(value,-value,0,0))
@@ -87,10 +87,6 @@ function updateLedger!(l::Ledger,t::Transaction,secmaster::Dict{String,Security}
         return (0.,0.)
     end
 
-    ## just for now
-    @assert sum([x.value for x  in values(l.positions)])==0
-    ##@assert countmap(l.positions)
-    ##@assert values(l.positions)
 end
 # function run_pnl(transactions::Vector{Transaction},secmaster::Dict{String,Security},prices::NDSparse)
 
@@ -150,11 +146,21 @@ trades = [Transaction(Date(2019,1,2,),"AMZN",1000,200),
 
 l = Ledger()
 
-updateLedger!(l,trades[1],secmaster)
-##updateLedger!(l,trades[2],secmaster)
-##updateLedger!(l,trades[3],secmaster)
-print(l)
+@assert updateLedger!(l,Transaction(Date(2019,1,2,),"AMZN",1000,200),secmaster)==(0.,0.)
+@assert l.inventory["AMZN"]==1000
+@assert l.inventory["USD"]==-1000*200
+@assert updateLedger!(l,Transaction(Date(2019,1,2,),"AMZN",2000,200),secmaster)==(0.,0.)
+@assert l.inventory["AMZN"]==3000
+@assert l.inventory["USD"]==(-1000*200 + -2000*200)
 
+@assert updateLedger!(l,Transaction(Date(2019,1,2,),"IBM",1000,101),secmaster)==(0.,0.)
+@assert l.inventory["IBM"]==1000
+@assert l.inventory["USD"]==(-1000*200 + -2000*200 + -1000*101)
 
+println(l)
+
+##[DataFrame(ticker=collect(keys(l.positions))) DataFrame(values(l.positions))]
+##@assert countmap(l.positions)
+##@assert values(l.positions)
 
 ##end # module Ledger
