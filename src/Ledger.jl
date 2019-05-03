@@ -39,52 +39,48 @@ price::Float64
 end
 
 struct Position
-units::Float64
 value::Float64
 derivatives_offset::Float64
-end
-
-struct PositionSE
 unrealized_pnl::Float64
 realized_pnl::Float64
 end
 
+import Base.+
+function +(a::Position, b::Position)
+    Position(a.value + b.value,
+             a.derivatives_offset + b.derivatives_offset,
+             a.unrealized_pnl + b.unrealized_pnl,
+             a.realized_pnl + b.realized_pnl)
+end
+
 mutable struct Ledger
+inventory::Dict{String,Float64}
 positions::Dict{String,Position}
-shareholder_equity::Dict{String,PositionSE}
-Ledger() = new(Dict{String,Position}(),Dict{String,PositionSE}())
-end
-
-function initDerivative(positions::Dict{String,Position},ticker::String,quantity::Float64,value::Float64)
-    @assert !haskey(positions,ticker)
-    positions[ticker] = Position(quantity,value,-value)
-end
-
-function initPosition(positions::Dict{String,Position},ticker::String,quantity::Float64,value::Float64)
-    @assert !haskey(positions,ticker)
-    positions[ticker] = Position(quantity,value,0)
-end
-
-function debitCash(positions::Dict{String,Position},ccy::String,quantity::Float64)
-    if !haskey(positions,ccy)
-        l.positions[ccy] = Position(-quantity,-quantity,0)
-    else
-        l.positions[ccy] += Position(-quantity,-quantity,0)
-    end
+##Ledger() = new(Dict{String,Position}(),Dict{String,PositionSE}())
+Ledger() = new(Dict{String,Float64}(),Dict{String,Position}())
 end
 
 function updateLedger(l::Ledger,t::Transaction,secmaster::Dict{String,Security})
     s = secmaster[t.ticker]
     value = t.quantity * s.valuation(t.price)
 
-    # init position has no SE impact
-    if !haskey(l.positions,t.ticker)
+
+    # 3 cases,
+    # 1) new position / add to a position
+    # 2) reduce position
+    # 3) flip position
+
+    # 1) new position / add to position has no SE impact
+    if !haskey(l.inventory,t.ticker)
+        l.inventory[t.ticker] = t.quantity
         if s.is_derivative
-            initDerivative(l.positions,t.ticker,t.quantity,value)
+            ## for derivatives, decr derivatives_offset
+            increment!(l.positions,t.ticker,Position(value,-value,0,0))
         else
-            ## init position / debit cash
-            initPosition(l.positions,t.ticker,t.quantity,value)
-            debitCash(l.positions,s.settle_ccy,value)
+            ## for non-deriv, decr cash as a new position
+            increment!(l.positions,t.ticker,Position(value,0,0,0))
+            increment!(l.inventory,s.settle_ccy,-value)
+            increment!(l.positions,s.settle_ccy,Position(-value,0,0,0))
         end
     end
 
