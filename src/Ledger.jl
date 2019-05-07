@@ -22,7 +22,6 @@ function incrementdelete!(d::Dict{K,V},k::K,v::V) where V where K
     nv
 end
 
-
 struct Security
 is_derivative::Bool
 trade_ccy::String
@@ -38,55 +37,108 @@ quantity::Float64
 price::Float64
 end
 
-struct Position
+mutable struct SecurityBalanceSheet
+current_position::Float64
+avgprice::Float64
+mark::Float64
 value::Float64
 derivatives_offset::Float64
 unrealized_pnl::Float64
 realized_pnl::Float64
 end
 
-import Base.+
-function +(a::Position, b::Position)
-    Position(a.value + b.value,
-             a.derivatives_offset + b.derivatives_offset,
-             a.unrealized_pnl + b.unrealized_pnl,
-             a.realized_pnl + b.realized_pnl)
+Ledger = Dict{String,SecurityBalanceSheet}
+
+function ledger2df(l::Ledger)
+    df = [DataFrame(ticker=collect(keys(l))) DataFrame(values(l))]
 end
 
-mutable struct Ledger
-inventory::Dict{String,Float64}
-positions::Dict{String,Position}
-##Ledger() = new(Dict{String,Position}(),Dict{String,PositionSE}())
-Ledger() = new(Dict{String,Float64}(),Dict{String,Position}())
+function checkaccounts(l::Ledger)
+    df = ledger2df(l)
+    ## ignores ccy for now
+    assets = sum(df[:value]) + sum(df[:derivatives_offset])
+    se = sum(df[:unrealized_pnl]) + sum(df[:realized_pnl])
+    assets == se
 end
+
+# import Base.+
+# function +(a::Position, b::Position)
+#     Position(a.value + b.value,
+#              a.derivatives_offset + b.derivatives_offset,
+#              a.unrealized_pnl + b.unrealized_pnl,
+#              a.realized_pnl + b.realized_pnl)
+# end
+
 
 ## returns a tuple of unrealized_pnl, realized_pnl
-function updateLedger!(l::Ledger,t::Transaction,secmaster::Dict{String,Security})
+function updateLedger!(ledger::Ledger,t::Transaction,secmaster::Dict{String,Security})
     s = secmaster[t.ticker]
     value = t.quantity * s.valuation(t.price)
-
 
     # 3 cases,
     # 1) new position / add to a position
     # 2) reduce position
     # 3) flip position
 
-    # 1) new position / add to position has no SE impact
-    if !haskey(l.inventory,t.ticker) || sign(t.quantity) == sign(l.inventory[t.ticker])
-        increment!(l.inventory,t.ticker,t.quantity)
+    # 1) new position
+    if !haskey(ledger,t.ticker) || ledger[t.ticker].current_position == 0
         if s.is_derivative
-            ## for derivatives, decr derivatives_offset
-            increment!(l.positions,t.ticker,Position(value,-value,0,0))
+            ledger[t.ticker] = SecurityBalanceSheet(t.quantity,t.price,t.price,value,-value,0,0)
         else
-            ## for non-deriv, decr cash as a new position
-            increment!(l.positions,t.ticker,Position(value,0,0,0))
-            increment!(l.inventory,s.settle_ccy,-value)
-            increment!(l.positions,s.settle_ccy,Position(-value,0,0,0))
+            ledger[t.ticker] = SecurityBalanceSheet(t.quantity,t.price,t.price,value,0,0,0)
+            ## debit cash
+            if haskey(ledger,s.settle_ccy)
+                ledger[s.settle_ccy].current_position -= value
+                ledger[s.settle_ccy].value -= value
+            else
+                ledger[s.settle_ccy] = SecurityBalanceSheet(-value,1,1,-value,0,0,0)
+            end
         end
-        ## position init/add, no SE impact
+        ## no SE impact
         return (0.,0.)
+    else
+        ## reference to secbs
+        secbs = ledger[t.ticker]
+        ## add to position
+        if sign(secbs.current_position) == sign(t.quantity)
+            old_pos = secbs.current_position
+            new_pos = old_pos + t.quantity
+            secbs.current_position = new_pos
+            secbs.avgprice = secbs.avgprice * old_pos / new_pos + t.price * t.quantity / new_pos
+            ## secbs.mark -- no change
+            secbs.value += value
+            if s.is_derivative
+                secbs.derivatives_offset += -value
+            else
+                ## if we are adding to a position, the settle_ccy should already exist in the hash
+                ledger[s.settle_ccy].current_position -= value
+                ledger[s.settle_ccy].value -= value
+            end
+            ## no SE impact
+            return (0.,0.)
+        else
+            ## closeout
+            if -t.quantity == secbs.current_position
+                secbs.realized_pnl += -value - t.quantity * s.valuation(secbs.avgprice)
+                if !s.is_derivative
+                    ledger[s.settle_ccy].current_position -= value
+                    ledger[s.settle_ccy].value -= value
+                end
+                ## zero out position
+                secbs.current_position = 0
+                secbs.avgprice = NaN
+                secbs.mark = NaN
+                secbs.value = 0
+                secbs.derivatives_offset = 0
+                secbs.unrealized_pnl = 0
+                return (secbs.unrealized_pnl,secbs.realized_pnl)
+            else
+                ## reduction
+                proportion = -t.quantity / secbs.current_position
+                error("not implemented")
+            end
+        end
     end
-
 end
 # function run_pnl(transactions::Vector{Transaction},secmaster::Dict{String,Security},prices::NDSparse)
 
@@ -137,7 +189,7 @@ ibm=DataFrame(ticker="IBM",asofdate=[Date(2019,1,2),Date(2019,1,3)],price=[100,1
 amzn=DataFrame(ticker="AMZN",asofdate=[Date(2019,1,2),Date(2019,1,3)],price=[200,201])
 prices = [ibm;amzn]
 
-trades = [Transaction(Date(2019,1,2,),"AMZN",1000,200),
+trades = [Transaction(Date(2019,1,2),"AMZN",1000,200),
           Transaction(Date(2019,1,20,),"IBM",10,100),
           Transaction(Date(2019,1,20,),"IBM",-10,100.50)
           ]
@@ -146,18 +198,26 @@ trades = [Transaction(Date(2019,1,2,),"AMZN",1000,200),
 
 l = Ledger()
 
-@assert updateLedger!(l,Transaction(Date(2019,1,2,),"AMZN",1000,200),secmaster)==(0.,0.)
-@assert l.inventory["AMZN"]==1000
-@assert l.inventory["USD"]==-1000*200
-@assert updateLedger!(l,Transaction(Date(2019,1,2,),"AMZN",2000,200),secmaster)==(0.,0.)
-@assert l.inventory["AMZN"]==3000
-@assert l.inventory["USD"]==(-1000*200 + -2000*200)
+@assert updateLedger!(l,Transaction(Date(2019,1,2),"AMZN",1000,200),secmaster)==(0.,0.)
+@assert l["AMZN"].current_position==1000
+@assert l["USD"].current_position==-1000*200
+@assert checkaccounts(l)
+@assert updateLedger!(l,Transaction(Date(2019,1,2),"AMZN",2000,200),secmaster)==(0.,0.)
+@assert l["AMZN"].current_position==3000
+@assert l["USD"].current_position==(-1000*200 + -2000*200)
+@assert checkaccounts(l)
 
-@assert updateLedger!(l,Transaction(Date(2019,1,2,),"IBM",1000,101),secmaster)==(0.,0.)
-@assert l.inventory["IBM"]==1000
-@assert l.inventory["USD"]==(-1000*200 + -2000*200 + -1000*101)
+@assert updateLedger!(l,Transaction(Date(2019,1,2),"IBM",1000,101),secmaster)==(0.,0.)
+@assert l["IBM"].current_position==1000
+@assert l["USD"].current_position==(-1000*200 + -2000*200 + -1000*101)
+@assert checkaccounts(l)
+@assert updateLedger!(l,Transaction(Date(2019,1,2),"AMZN",-3000,200),secmaster)==(0.,0.)
+@assert checkaccounts(l)
 
-println(l)
+
+l2 = Ledger()
+@assert updateLedger!(l2,Transaction(Date(2019,1,2),"AMZN",1000,200),secmaster)==(0.,0.)
+@assert updateLedger!(l2,Transaction(Date(2019,1,2),"AMZN",-1000,201),secmaster)==(0.,1000.)
 
 ##[DataFrame(ticker=collect(keys(l.positions))) DataFrame(values(l.positions))]
 ##@assert countmap(l.positions)
