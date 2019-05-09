@@ -119,7 +119,7 @@ function updateLedger!(ledger::Ledger,t::Transaction,secmaster::Dict{String,Secu
         else
             ## closeout
             if -t.quantity == secbs.current_position
-                secbs.realized_pnl += -value - t.quantity * s.valuation(secbs.avgprice)
+                secbs.realized_pnl += -t.quantity * (s.valuation(t.price) - s.valuation(secbs.avgprice))
                 if !s.is_derivative
                     ledger[s.settle_ccy].current_position -= value
                     ledger[s.settle_ccy].value -= value
@@ -217,7 +217,15 @@ l = Ledger()
 
 l2 = Ledger()
 @assert updateLedger!(l2,Transaction(Date(2019,1,2),"AMZN",1000,200),secmaster)==(0.,0.)
+@assert checkaccounts(l2)
 @assert updateLedger!(l2,Transaction(Date(2019,1,2),"AMZN",-1000,201),secmaster)==(0.,1000.)
+@assert checkaccounts(l2)
+
+l3 = Ledger()
+@assert updateLedger!(l3,Transaction(Date(2019,1,2),"AMZN",-1000,201),secmaster)==(0.,0.)
+@assert checkaccounts(l3)
+@assert updateLedger!(l3,Transaction(Date(2019,1,2),"AMZN",1000,200),secmaster)==(0.,1000.)
+@assert checkaccounts(l3)
 
 ##[DataFrame(ticker=collect(keys(l.positions))) DataFrame(values(l.positions))]
 ##@assert countmap(l.positions)
